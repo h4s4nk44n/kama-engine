@@ -17,6 +17,23 @@ import {
 
 export type PeerState = 'idle' | 'waiting' | 'connecting' | 'connected' | 'closed' | 'failed';
 
+/** Secilen ICE aday ciftinden okunan gercek tasima bilgisi. */
+export interface TransportInfo {
+  /** 'udp' | 'tcp' — medyanin kablo uzerindeki protokolu */
+  protocol: string;
+  /** TURN uzerinden gidiliyorsa relay protokolu */
+  relayProtocol?: string;
+  localType?: string;
+  remoteType?: string;
+  localAddress?: string;
+  remoteAddress?: string;
+  remotePort?: number;
+  /** tarayicinin olctugu gercek ag RTT'si */
+  rttMs?: number;
+  dtlsState?: string;
+  sctpState?: string;
+}
+
 export interface PeerEvents {
   onState: (state: PeerState, detail?: string) => void;
   /** Guvenilmez medya kanali acildi */
@@ -79,6 +96,73 @@ export class PeerSession {
     ws.addEventListener('error', () => {
       this.ev.onState('failed', 'sinyallesme hatasi');
     });
+  }
+
+  /**
+   * Medyanin kablo uzerinde HANGI protokolle gittigini soyler.
+   *
+   * DataChannel yigini: uygulama -> SCTP -> DTLS -> **UDP**.
+   * TCP yalnizca sinyallesmede (WebSocket) kullanilir; medya ona hic
+   * dokunmaz. Bunu tahmin etmek yerine tarayicinin kendi istatistiklerinden
+   * okuyoruz: secilen ICE aday ciftinin protokolu.
+   *
+   * TURN/TCP yedegine dusulurse burada 'tcp' gorunur — bu kurulumda
+   * ICE sunucusu tanimli olmadigi icin yalniz host adaylari, yani dogrudan
+   * UDP kullanilir.
+   */
+  async transportInfo(): Promise<TransportInfo | null> {
+    if (!this.pc) return null;
+
+    let report: RTCStatsReport;
+    try {
+      report = await this.pc.getStats();
+    } catch {
+      return null;
+    }
+
+    type PairStats = RTCStats & {
+      state?: string;
+      nominated?: boolean;
+      localCandidateId?: string;
+      remoteCandidateId?: string;
+      currentRoundTripTime?: number;
+    };
+    type CandStats = RTCStats & {
+      protocol?: string;
+      candidateType?: string;
+      address?: string;
+      port?: number;
+      relayProtocol?: string;
+    };
+
+    let best: PairStats | null = null;
+    report.forEach((r) => {
+      const s = r as PairStats;
+      if (s.type !== 'candidate-pair' || s.state !== 'succeeded') return;
+      // Nominated cift onceliklidir
+      if (!best || (s.nominated && !best.nominated)) best = s;
+    });
+    if (!best) return null;
+
+    const pair: PairStats = best;
+    const local = pair.localCandidateId ? (report.get(pair.localCandidateId) as CandStats | undefined) : undefined;
+    const remote = pair.remoteCandidateId ? (report.get(pair.remoteCandidateId) as CandStats | undefined) : undefined;
+
+    return {
+      protocol: (local?.protocol ?? 'bilinmiyor').toLowerCase(),
+      relayProtocol: local?.relayProtocol,
+      localType: local?.candidateType,
+      remoteType: remote?.candidateType,
+      localAddress: local?.address,
+      remoteAddress: remote?.address,
+      remotePort: remote?.port,
+      rttMs:
+        pair.currentRoundTripTime !== undefined
+          ? Math.round(pair.currentRoundTripTime * 1000 * 10) / 10
+          : undefined,
+      dtlsState: this.pc.sctp?.transport?.state,
+      sctpState: this.pc.sctp?.state,
+    };
   }
 
   /** Kontrol kanalindan JSON gonderir (guvenilir, sirali). */

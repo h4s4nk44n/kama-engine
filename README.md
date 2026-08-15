@@ -474,6 +474,54 @@ ilerletir. Testlerle doğrulanıyor.
 
 ---
 
+## Taşıma: medya UDP üzerinde, TCP yalnızca sinyalleşmede
+
+Sık sorulan soru olduğu için ölçümle cevaplanıyor. `RTCDataChannel`'ın altındaki
+yığın şudur:
+
+```
+uygulama (bizim datagramlarımız)
+  → SCTP        ordered:false, maxRetransmits:0  → güvenilirlik KAPALI
+  → DTLS        şifreleme
+  → UDP         kablodaki gerçek protokol
+```
+
+`{ ordered: false, maxRetransmits: 0 }` SCTP'nin yeniden gönderim ve sıralama
+mekanizmalarını devre dışı bırakır; geriye gerçek bir güvenilmez datagram
+taşıyıcısı kalır. Kaybolan paket kaybolur — zaten FEC ve ARQ bunun için var.
+
+**TCP nerede kullanılıyor:** yalnızca sinyalleşmede (WebSocket) ve sayfanın
+kendisini indirirken (HTTP). Offer/answer/ICE alışverişi bittikten sonra medya
+o bağlantıya hiç dokunmaz.
+
+Bu tahmin değil — sayfa protokolü tarayıcının kendi istatistiklerinden
+(`RTCPeerConnection.getStats()`, seçilen ICE aday çifti) okur ve üstteki satırda
+gösterir:
+
+```
+SCTP/DTLS/UDP · ordered:false · maxRetransmits:0 · host/host · ağ RTT 1 ms
+```
+
+Satır UDP değilse **kırmızıya** döner. Konsoldan da bakılabilir:
+
+```js
+kama.debug().wire
+// { protocol: "udp", localType: "host", remoteType: "host",
+//   dtlsState: "connected", sctpState: "connected", rttMs: 1 }
+```
+
+ICE sunucusu tanımlı değildir; aynı LAN'da yalnızca `host` adayları kullanılır,
+yani doğrudan UDP. (Bir TURN sunucusu tanımlanıp TCP yedeğine düşülseydi bu
+satır `SCTP/DTLS/TCP` gösterirdi.)
+
+> **Sınır:** Tarayıcıda ham UDP soketi yoktur. DataChannel UDP üzerine SCTP+DTLS
+> çerçevelemesi ekler; dolayısıyla kabloda "çıplak UDP" değil, UDP taşıyan bir
+> WebRTC akışıdır. Tarayıcı dışı bir UDP ucuyla (ör. C++ sunucu) doğrudan
+> konuşmak gerekiyorsa iki yol var: sunucu tarafında bir WebRTC/SCTP köprüsü,
+> ya da WebTransport (QUIC datagramları, yine UDP). Motorun kendisi taşıyıcıdan
+> bağımsızdır — `DatagramTransport` arayüzünü uygulayan başka bir taşıyıcı
+> takılabilir.
+
 ## Gecikme ve akıcılık: gönderim gruplamadan ayrıdır
 
 İlk sürümde bir FEC grubunun **tamamı** (source + parity) grup kapanınca birlikte

@@ -32,7 +32,7 @@ import { SenderSymbolCache, NackController, RtxBudget } from '../net/arq.ts';
 import { LossPattern, type LossModel } from '../net/lossPattern.ts';
 import { DelayQueue, RttMeter } from '../net/delayQueue.ts';
 import { LoopbackTransport, type DatagramTransport } from '../net/channel.ts';
-import { PeerSession, type PeerState } from '../net/signaling.ts';
+import { PeerSession, type PeerState, type TransportInfo } from '../net/signaling.ts';
 import { MediaSender, type RemoteDecoderConfig } from '../media/sender.ts';
 import { MediaReceiver } from '../media/receiver.ts';
 import { MetricsOverlay, snapshot, platformLine, type ArqPanelStats } from './metrics.ts';
@@ -111,6 +111,9 @@ export class App {
   private txBytes = 0;
   /** Son grup kayiplari — hata ayiklama */
   private lossLog: Array<{ panel: string; groupId: number; missing: number; K: number }> = [];
+  /** Kablodaki gercek tasima (tarayici istatistiklerinden okunur) */
+  private transportInfo: TransportInfo | null = null;
+  private transportPollHandle: number | null = null;
 
   private panels: Panel[] = [];
   private tickHandle: number | null = null;
@@ -370,12 +373,45 @@ export class App {
     this.el.pairBar.classList.toggle('hidden', state === 'connected');
 
     if (state === 'connected') {
-      this.el.linkInfo.textContent = 'RTCDataChannel · ordered:false · maxRetransmits:0';
+      this.updateLinkInfo();
+      this.startTransportPoll();
       this.peer?.sendControl({ type: 'settings', settings: this.settings });
       this.announceCodec();
     } else if (this.transport instanceof LoopbackTransport) {
       this.el.linkInfo.textContent = 'loopback (eşleş yok) · tam boru hattı çalışıyor';
     }
+  }
+
+  /**
+   * Kablodaki gercek protokolu tarayicidan okur.
+   * DataChannel yigini SCTP -> DTLS -> UDP'dir; TCP yalniz sinyallesmede
+   * (WebSocket) kullanilir. Bunu ekranda gostermek, "UDP mi TCP mi"
+   * sorusunu tahminle degil olcumle cevaplar.
+   */
+  private startTransportPoll(): void {
+    if (this.transportPollHandle !== null) return;
+    const poll = async (): Promise<void> => {
+      this.transportInfo = (await this.peer?.transportInfo()) ?? null;
+      this.updateLinkInfo();
+    };
+    void poll();
+    this.transportPollHandle = window.setInterval(() => void poll(), 2000);
+  }
+
+  private updateLinkInfo(): void {
+    const t = this.transportInfo;
+    if (!t) {
+      this.el.linkInfo.textContent = 'RTCDataChannel · ordered:false · maxRetransmits:0';
+      return;
+    }
+    const proto = (t.relayProtocol ?? t.protocol).toUpperCase();
+    const path = [t.localType, t.remoteType].filter(Boolean).join('/');
+    this.el.linkInfo.textContent =
+      `SCTP/DTLS/${proto} · ordered:false · maxRetransmits:0` +
+      (path ? ` · ${path}` : '') +
+      (t.rttMs !== undefined ? ` · ağ RTT ${t.rttMs} ms` : '');
+    // UDP degilse (ör. TURN/TCP yedegi) kullaniciya belli olsun
+    this.el.linkInfo.style.color = proto === 'UDP' ? 'var(--accent)' : 'var(--warn)';
   }
 
   private useTransport(t: DatagramTransport): void {
@@ -578,6 +614,10 @@ export class App {
       clearInterval(this.pingHandle);
       this.pingHandle = null;
     }
+    if (this.transportPollHandle !== null) {
+      clearInterval(this.transportPollHandle);
+      this.transportPollHandle = null;
+    }
     this.delayQueue.clear();
     this.rtt.reset();
     this.symbolCache.reset();
@@ -723,6 +763,8 @@ export class App {
       transport: this.transport
         ? { kind: this.transport.constructor.name, ready: this.transport.ready, ...this.transport.stats }
         : null,
+      /** Kablodaki gercek protokol — 'udp' bekleniyor */
+      wire: this.transportInfo,
       loss: {
         p: this.lossMain.getLoss(),
         model: this.lossMain.getModel(),
