@@ -1,0 +1,20 @@
+# Bagimliliklar
+node_modules/
+
+# Derleme ciktisi
+dist/
+*.tsbuildinfo
+
+# TLS sertifikalari — key.pem OZEL ANAHTARDIR, asla depoya girmez.
+# Her makine kendi sertifikasini "npm run cert" ile uretir.
+server/certs/
+
+# Isletim sistemi / editor artiklari
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Gecici
+*.tmp.ts

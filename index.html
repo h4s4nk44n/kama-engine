@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>kama-engine · RS FEC üzerinden gerçek zamanlı video</title>
+    <style>
+      /* Projeksiyonda okunacak: koyu zemin, yüksek kontrast, büyük tipografi */
+      :root {
+        --bg: #07090d;
+        --panel: #11151c;
+        --panel-2: #161c25;
+        --line: #232c39;
+        --fg: #eef3fa;
+        --dim: #8b98ab;
+        --accent: #3ddc84;
+        --accent-dim: #1d6b43;
+        --warn: #ff5f56;
+        --warn-dim: #6b1f1c;
+        --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      body { padding: 18px clamp(12px, 2vw, 28px) 40px; }
+
+      /* ---- başlık ---- */
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 10px 18px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+        margin-bottom: 18px;
+      }
+      h1 {
+        font-size: clamp(20px, 2.4vw, 30px);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0;
+      }
+      h1 small {
+        display: block;
+        font-size: clamp(11px, 1vw, 13px);
+        font-weight: 400;
+        color: var(--dim);
+        letter-spacing: 0;
+        margin-top: 4px;
+      }
+      .head-meta {
+        margin-left: auto;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+        font-family: var(--mono);
+        font-size: clamp(11px, 1vw, 13px);
+      }
+      #platform { color: var(--accent); font-weight: 600; }
+      #status {
+        color: var(--dim);
+      }
+      #status[data-state="connected"] { color: var(--accent); }
+      #status[data-state="failed"], #status[data-state="closed"] { color: var(--warn); }
+      #linkInfo { color: var(--dim); font-size: 11px; }
+
+      /* ---- eşleşme çubuğu ---- */
+      .pairbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px 14px;
+        background: rgba(61, 220, 132, 0.08);
+        border: 1px solid var(--accent-dim);
+        border-radius: 12px;
+        padding: 12px clamp(14px, 2vw, 22px);
+        margin-bottom: 14px;
+      }
+      .pairbar.hidden { display: none; }
+      .pairbar-label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--dim);
+      }
+      #pairUrl {
+        font-family: var(--mono);
+        font-size: clamp(16px, 2vw, 24px);
+        font-weight: 700;
+        color: var(--accent);
+        user-select: all;
+        word-break: break-all;
+      }
+      .pairbar-note { font-size: 12px; color: var(--dim); }
+
+      /* ---- kontroller ---- */
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 14px clamp(14px, 2vw, 28px);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px clamp(14px, 2vw, 22px);
+        margin-bottom: 18px;
+        align-items: end;
+      }
+      .ctrl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+      .ctrl-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .ctrl label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .ctrl output {
+        font-family: var(--mono);
+        font-size: clamp(15px, 1.5vw, 19px);
+        font-weight: 700;
+        color: var(--fg);
+      }
+      input[type="range"] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 100%;
+        height: 26px;
+        background: transparent;
+        cursor: pointer;
+      }
+      input[type="range"]::-webkit-slider-runnable-track {
+        height: 6px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 22px;
+        height: 22px;
+        margin-top: -9px;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid #0b1a12;
+      }
+      input[type="range"]::-moz-range-track {
+        height: 6px; background: var(--panel-2);
+        border: 1px solid var(--line); border-radius: 4px;
+      }
+      input[type="range"]::-moz-range-thumb {
+        width: 20px; height: 20px; border-radius: 50%;
+        background: var(--accent); border: 2px solid #0b1a12;
+      }
+
+      .radios { display: flex; gap: 8px; }
+      .radios label {
+        flex: 1;
+        text-align: center;
+        padding: 8px 6px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel-2);
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: none;
+        cursor: pointer;
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .radios input { position: absolute; opacity: 0; pointer-events: none; }
+      .radios input:checked + span { color: var(--bg); }
+      .radios label:has(input:checked) {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--bg);
+        font-weight: 700;
+      }
+
+      .actions { display: flex; gap: 10px; align-items: center; }
+      button {
+        font: inherit;
+        font-weight: 700;
+        padding: 11px 20px;
+        border-radius: 9px;
+        border: 1px solid var(--accent);
+        background: var(--accent);
+        color: #06120b;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      button.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+      button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+      #mOut {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--dim);
+        grid-column: 1 / -1;
+        border-top: 1px dashed var(--line);
+        padding-top: 10px;
+        margin-top: 2px;
+      }
+
+      /* ---- ortak durum satırı ---- */
+      .statusline {
+        font-family: var(--mono);
+        font-size: clamp(12px, 1.25vw, 15px);
+        font-weight: 600;
+        color: var(--fg);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px clamp(12px, 1.6vw, 18px);
+        margin-bottom: 12px;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+      .statusline b { color: var(--accent); }
+
+      /* ---- paneller ---- */
+      .panels {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: clamp(10px, 1.2vw, 18px);
+      }
+      /* Dar ekran: paneller alt alta, canvas küçülür, metrikler kalır */
+      @media (max-width: 1100px) {
+        .panels { grid-template-columns: 1fr; }
+        .panel .stage { max-width: 420px; }
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .panel.on { border-color: var(--accent-dim); }
+      .panel.off { border-color: var(--warn-dim); }
+      .panel.arq { border-color: #2b5f8f; }
+
+      /* ARQ panelinin büyük punto metrikleri */
+      .arq-head {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 10px clamp(10px, 1.2vw, 16px) 0;
+      }
+      .arq-big {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        background: rgba(63, 141, 214, 0.1);
+        border: 1px solid #2b5f8f;
+        border-radius: 8px;
+        padding: 8px 10px;
+        min-width: 0;
+      }
+      .arq-big-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--dim);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .arq-big b {
+        font-family: var(--mono);
+        font-size: clamp(22px, 3vw, 34px);
+        font-weight: 700;
+        line-height: 1.05;
+        font-variant-numeric: tabular-nums;
+        color: #6fb4f0;
+      }
+      .arq-big.dead b { color: var(--warn); }
+
+      .badge {
+        font-family: var(--mono);
+        font-size: clamp(12px, 1.2vw, 15px);
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .panel.off .badge { background: rgba(255, 95, 86, 0.12); color: #ff9a94; }
+      .panel.on .badge { background: rgba(61, 220, 132, 0.12); color: var(--accent); }
+      .panel.arq .badge { background: rgba(63, 141, 214, 0.14); color: #6fb4f0; }
+
+      .stage {
+        position: relative;
+        background: #000;
+        aspect-ratio: 16 / 9;
+        width: 100%;
+      }
+      .stage canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+
+      .metrics {
+        padding: 10px clamp(10px, 1.2vw, 16px) 14px;
+        display: grid;
+        gap: 2px;
+      }
+      .metric-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(35, 44, 57, 0.5);
+      }
+      .metric-row:last-child { border-bottom: none; }
+      .metric-key {
+        font-size: clamp(11px, 1.05vw, 13px);
+        color: var(--dim);
+        letter-spacing: 0.02em;
+      }
+      .metric-val {
+        font-family: var(--mono);
+        font-size: clamp(14px, 1.5vw, 18px);
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+      .metric-row.hot .metric-val { color: var(--warn); }
+
+      /* ---- alt bilgi ---- */
+      .footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 14px;
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+        font-size: 12px;
+        color: var(--dim);
+      }
+      .preview-wrap {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      #previewCanvas {
+        width: 128px;
+        aspect-ratio: 16 / 9;
+        background: #000;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        display: block;
+      }
+      .pipeline {
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--dim);
+      }
+      .pipeline b { color: var(--accent); font-weight: 600; }
+
+      #errors {
+        display: none;
+        margin-top: 12px;
+        padding: 10px 14px;
+        border: 1px solid var(--warn-dim);
+        background: rgba(255, 95, 86, 0.1);
+        color: #ffb3ae;
+        border-radius: 9px;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      #errors.visible { display: block; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>
+        kama-engine
+        <small>getUserMedia → WebCodecs → <b>fragmentation · Reed-Solomon FEC · kayıp enjeksiyonu</b> → RTCDataChannel (ordered:false, maxRetransmits:0)</small>
+      </h1>
+      <div class="head-meta">
+        <span id="platform">—</span>
+        <span id="status" data-state="idle">boşta</span>
+        <span id="linkInfo">—</span>
+      </div>
+    </header>
+
+    <div id="pairBar" class="pairbar">
+      <span class="pairbar-label">Telefon bu adrese girsin</span>
+      <b id="pairUrl">—</b>
+      <span id="pairNote" class="pairbar-note"></span>
+    </div>
+
+    <section class="controls">
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <label for="lossSlider">Paket kaybı</label>
+          <output id="lossOut">30 %</output>
+        </div>
+        <input id="lossSlider" type="range" min="0" max="50" step="1" value="30" />
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <label for="rttSlider">RTT (yapay)</label>
+          <output id="rttOut">60 ms</output>
+        </div>
+        <input id="rttSlider" type="range" min="0" max="400" step="10" value="60" />
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <label for="bitrateSlider">Bitrate</label>
+          <output id="bitrateOut">750 kbps</output>
+        </div>
+        <input id="bitrateSlider" type="range" min="150" max="3000" step="50" value="750" />
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <label for="ratioSlider">Koruma oranı r</label>
+          <output id="ratioOut">0.80</output>
+        </div>
+        <input id="ratioSlider" type="range" min="20" max="120" step="5" value="80" />
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head">
+          <label for="kSlider">K_target</label>
+          <output id="kOut">16</output>
+        </div>
+        <input id="kSlider" type="range" min="4" max="32" step="1" value="16" />
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head"><label>Kayıp modeli</label></div>
+        <div class="radios">
+          <label><input type="radio" name="lossModel" value="iid" checked /><span>i.i.d.</span></label>
+          <label><input type="radio" name="lossModel" value="gilbert" /><span>Gilbert-E.</span></label>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head"><label for="sourceSel">Görüntü kaynağı</label></div>
+        <div class="radios">
+          <label><input type="radio" name="videoSource" value="camera" checked /><span>Kamera</span></label>
+          <label><input type="radio" name="videoSource" value="pattern" /><span>Test deseni</span></label>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head"><label>Motor</label></div>
+        <div class="actions">
+          <button id="startBtn">Başlat</button>
+          <button id="stopBtn" class="ghost" disabled>Durdur</button>
+        </div>
+      </div>
+
+      <div id="mOut">M = 13 · 16+13 paket/grup</div>
+    </section>
+
+    <div id="statusLine" class="statusline">—</div>
+
+    <section class="panels">
+      <article class="panel off">
+        <div class="badge" id="plainBadge">KORUMASIZ</div>
+        <div class="stage"><canvas id="plainCanvas" width="640" height="360"></canvas></div>
+        <div class="metrics" id="plainMetrics"></div>
+      </article>
+
+      <article class="panel on">
+        <div class="badge" id="fecBadge">FEC</div>
+        <div class="stage"><canvas id="fecCanvas" width="640" height="360"></canvas></div>
+        <div class="metrics" id="fecMetrics"></div>
+      </article>
+
+      <article class="panel arq">
+        <div class="badge" id="arqBadge">FEC + ARQ</div>
+        <div class="stage"><canvas id="arqCanvas" width="640" height="360"></canvas></div>
+        <div class="arq-head">
+          <div class="arq-big">
+            <span class="arq-big-label">max_retries</span>
+            <b id="maxRetriesOut">—</b>
+          </div>
+          <div class="arq-big">
+            <span class="arq-big-label">nack_infeasible</span>
+            <b id="infeasibleOut">—</b>
+          </div>
+        </div>
+        <div class="metrics" id="arqMetrics"></div>
+      </article>
+    </section>
+
+    <div id="errors"></div>
+
+    <div class="footer">
+      <div class="preview-wrap">
+        <canvas id="previewCanvas" width="256" height="144"></canvas>
+        <span>yerel kaynak<br /><b id="sourceInfo" style="color: var(--accent)">—</b></span>
+      </div>
+      <div class="pipeline">
+        Tek kamera · tek encoder · <b>tek fragman listesi</b> · tek kayıp deseni.
+        Üç panel aynı fiziksel paketleri kaybeder; fark yalnızca
+        <b>RS decode</b> ve <b>ARQ</b>'nun devrede olması.<br />
+        Medya track'i yok: <b>addTrack / ontrack kullanılmıyor</b>, her paket bu kodun içinden geçiyor.
+        Konsol: <b>kama.patternCheck()</b> üç panelin desenini karşılaştırır.
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

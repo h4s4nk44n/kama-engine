@@ -1,0 +1,33 @@
+{
+  "name": "kama-engine",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Tarayici ici gercek zamanli goruntu motoru: kendi paket katmani + Reed-Solomon FEC, RTCDataChannel uzerinden",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "start": "node server/signal.ts",
+    "serve": "npm run build && node server/signal.ts",
+    "test:fec": "node --test src/fec/rs.test.ts src/fec/index.test.ts",
+    "test:wire": "node --test src/wire/wire.test.ts",
+    "test:net": "node --test src/net/loss.test.ts",
+    "test": "node --test src/fec/rs.test.ts src/fec/index.test.ts src/wire/wire.test.ts src/net/loss.test.ts src/net/lossPattern.test.ts src/net/delay.test.ts src/net/arq.test.ts",
+    "test:arq": "node --test src/net/arq.test.ts src/net/delay.test.ts src/net/lossPattern.test.ts",
+    "cert": "node server/genCert.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "rollup": "npm:@rollup/wasm-node@^4.62.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}
