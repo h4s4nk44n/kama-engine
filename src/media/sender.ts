@@ -7,8 +7,10 @@
  *
  * Kare kaynagi icin iki yol var:
  *   1. MediaStreamTrackProcessor   - masaustu Chrome
- *   2. <video> + requestVideoFrameCallback + new VideoFrame(video)
- *      - Chrome Android'de MediaStreamTrackProcessor yok, bu yol kullanilir
+ *   2. <video> + requestVideoFrameCallback + canvas + new VideoFrame(canvas)
+ *      - Chrome Android ve iOS Safari'de MediaStreamTrackProcessor yok,
+ *        bu yol kullanilir; canvas adimi kamera donusunu (rotation) kareye
+ *        isler — bkz. pumpViaVideoElement
  *
  * VideoFrame sizintisi olmamasi icin her kare islendikten sonra close()
  * edilir; hata yollarinda da.
@@ -371,8 +373,15 @@ export class MediaSender {
   }
 
   /**
-   * Chrome Android yolu: MediaStreamTrackProcessor yok.
+   * Chrome Android / iOS Safari yolu: MediaStreamTrackProcessor yok.
    * <video> ogesi + requestVideoFrameCallback ile kare basina bir kez uyanir.
+   *
+   * DONUS DUZELTMESI: Telefon kameralari tamponu sensore gore YATAY verir;
+   * <video> ogesi donus metadatasini uygulayarak dik gosterir ama
+   * new VideoFrame(video) WebKit'te HAM tamponu alir — karsi tarafta
+   * goruntu 90 derece yatik cikar. drawImage donusu uyguladigi icin kare
+   * once bir canvas'a cizilir, VideoFrame oradan uretilir: yon kaynaginda
+   * duzelir, alici tarafta degisiklik gerekmez.
    */
   private async pumpViaVideoElement(): Promise<void> {
     const video = document.createElement('video');
@@ -382,13 +391,29 @@ export class MediaSender {
     this.videoEl = video;
     await video.play();
 
+    const canvas = document.createElement('canvas');
+    const cctx = canvas.getContext('2d', { alpha: false })!;
+
     const tick = (_now: number, meta: { mediaTime: number }): void => {
       if (!this.running || !this.videoEl) return;
       let frame: VideoFrame | null = null;
       try {
-        frame = new VideoFrame(video, { timestamp: Math.round(meta.mediaTime * 1e6) });
-        this.handleFrame(frame);
-        frame = null; // handleFrame sahipligi devraldi
+        // videoWidth/Height donus UYGULANMIS (gosterim) boyutlardir;
+        // portre tutulan telefonda w < h olur. Telefon dondurulunce
+        // boyutlar degisir — canvas ve encoder birlikte guncellenir.
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        if (w > 0 && h > 0) {
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+            this.ensureEncoderDims(w, h);
+          }
+          cctx.drawImage(video, 0, 0, w, h);
+          frame = new VideoFrame(canvas, { timestamp: Math.round(meta.mediaTime * 1e6) });
+          this.handleFrame(frame);
+          frame = null; // handleFrame sahipligi devraldi
+        }
       } catch (err) {
         this.onError?.(err);
       } finally {
@@ -400,6 +425,21 @@ export class MediaSender {
     };
 
     this.rvfcHandle = video.requestVideoFrameCallback(tick);
+  }
+
+  /** Kare boyutu yapilandirmadan farkliysa encoder gercek boyuta gecirilir. */
+  private ensureEncoderDims(w: number, h: number): void {
+    if (this.config.width === w && this.config.height === h) return;
+    this.config.width = w;
+    this.config.height = h;
+    if (this.encoder && this.encoder.state === 'configured') {
+      try {
+        this.encoder.configure(this.buildEncoderConfig());
+        this.lastKeyframeMs = 0; // yeni boyutta ilk kare keyframe olsun
+      } catch (err) {
+        this.onError?.(err);
+      }
+    }
   }
 
   /** Kare sahipligini devralir - her yolda close() edilir. */
