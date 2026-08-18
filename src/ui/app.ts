@@ -31,7 +31,7 @@ import { decodeDatagram, encodePing, decodePing, decodeNack, packetKind, blockIn
 import { SenderSymbolCache, NackController, RtxBudget } from '../net/arq.ts';
 import { LossPattern, type LossModel } from '../net/lossPattern.ts';
 import { DelayQueue, RttMeter } from '../net/delayQueue.ts';
-import { LoopbackTransport, type DatagramTransport } from '../net/channel.ts';
+import { DataChannelTransport, LoopbackTransport, type DatagramTransport } from '../net/channel.ts';
 import { PeerSession, type PeerState, type TransportInfo } from '../net/signaling.ts';
 import { MediaSender, type RemoteDecoderConfig } from '../media/sender.ts';
 import { MediaReceiver } from '../media/receiver.ts';
@@ -135,6 +135,7 @@ export class App {
     pairBar: byId<HTMLElement>('pairBar'),
     pairUrl: byId<HTMLElement>('pairUrl'),
     pairNote: byId<HTMLElement>('pairNote'),
+    loopbackBanner: byId<HTMLElement>('loopbackBanner'),
     maxRetries: byId<HTMLElement>('maxRetriesOut'),
     infeasible: byId<HTMLElement>('infeasibleOut'),
   };
@@ -372,6 +373,12 @@ export class App {
     this.el.status.textContent = detail ? `${labels[state]} — ${detail}` : labels[state];
     this.el.pairBar.classList.toggle('hidden', state === 'connected');
 
+    // 'connecting' de dahil: yeniden muzakere basladiginda ('ready')
+    // eski olu tasiyiciyla donup kalmak yerine loopback'e dusulur.
+    if (state !== 'connected') {
+      this.dropDeadTransport();
+    }
+
     if (state === 'connected') {
       this.updateLinkInfo();
       this.startTransportPoll();
@@ -398,6 +405,14 @@ export class App {
     this.transportPollHandle = window.setInterval(() => void poll(), 2000);
   }
 
+  private stopTransportPoll(): void {
+    if (this.transportPollHandle !== null) {
+      window.clearInterval(this.transportPollHandle);
+      this.transportPollHandle = null;
+    }
+    this.transportInfo = null;
+  }
+
   private updateLinkInfo(): void {
     const t = this.transportInfo;
     if (!t) {
@@ -418,7 +433,40 @@ export class App {
     if (this.transport && this.transport !== t) this.transport.close();
     this.transport = t;
     t.onDatagram = (bytes) => this.onDatagram(bytes);
+    if (t instanceof LoopbackTransport) {
+      // Kendi kendine test: kendi karelerimiz kendi encoder config'imizle
+      // cozulur.
+      if (this.localDecoderConfig) this.remoteDecoderConfig = this.localDecoderConfig;
+    } else {
+      // Gercek eslese gecis: loopback'ten kalan YEREL config ile karsi
+      // tarafin kareleri COZULMEZ — guvenilir kanaldan gelecek 'codec'
+      // duyurusu beklenir (sendControl kuyrukladigi icin kaybolmaz).
+      this.remoteDecoderConfig = null;
+    }
     this.resetPanels();
+    this.updateLoopbackBanner();
+  }
+
+  /**
+   * Esles koptugunda olu DataChannelTransport birakilir. Yayin suruyorsa
+   * SESSIZCE degil, banner ile birlikte loopback'e dusulur; yeni esles
+   * baglaninca useTransport gercek tasiyiciya geri gecer.
+   */
+  private dropDeadTransport(): void {
+    if (!(this.transport instanceof DataChannelTransport)) return;
+    // DC hala acik (or. yalniz sinyallesme koptu) — calisan yolu bozma
+    if (this.transport.ready) return;
+    this.stopTransportPoll();
+    this.transport.close();
+    this.transport = null;
+    if (this.running) this.useTransport(new LoopbackTransport());
+    this.updateLoopbackBanner();
+  }
+
+  /** Yayin loopback'teyken ekranda ACIK uyari: kullanici kendi goruntusunu izliyor. */
+  private updateLoopbackBanner(): void {
+    const show = this.running && this.transport instanceof LoopbackTransport;
+    this.el.loopbackBanner.classList.toggle('hidden', !show);
   }
 
   /** Kablodan gelen her datagram uc yola da beslenir. */
@@ -590,6 +638,7 @@ export class App {
       for (const r of this.sourceRadios) r.checked = r.value === this.sender.stats.videoSource;
 
       this.running = true;
+      this.updateLoopbackBanner();
       this.el.stopBtn.disabled = false;
       this.startTicker();
       this.startPinging();
@@ -626,6 +675,7 @@ export class App {
     this.txBytes = 0;
     this.el.startBtn.disabled = false;
     this.el.stopBtn.disabled = true;
+    this.updateLoopbackBanner();
   }
 
   private resetPanels(): void {

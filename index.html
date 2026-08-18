@@ -232,6 +232,22 @@
       }
       .statusline b { color: var(--accent); }
 
+      /* ---- loopback (self-test) uyarı bandı ---- */
+      .loopback-banner {
+        font-family: var(--mono);
+        font-size: clamp(12px, 1.25vw, 15px);
+        font-weight: 700;
+        text-align: center;
+        color: #ffb3ae;
+        background: rgba(255, 95, 86, 0.14);
+        border: 1px solid var(--warn);
+        border-radius: 10px;
+        padding: 10px clamp(12px, 1.6vw, 18px);
+        margin-bottom: 12px;
+      }
+      .loopback-banner b { color: var(--warn); }
+      .loopback-banner.hidden { display: none; }
+
       /* ---- paneller ---- */
       .panels {
         display: grid;
@@ -475,6 +491,10 @@
     </section>
 
     <div id="statusLine" class="statusline">—</div>
+
+    <div id="loopbackBanner" class="loopback-banner hidden">
+      SELF-TEST (loopback) — üç panelde <b>kendi görüntünüz</b> var; eşleş bağlanınca gerçek aktarıma otomatik geçilir
+    </div>
 
     <section class="panels">
       <article class="panel off">

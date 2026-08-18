@@ -598,7 +598,9 @@ Kayıp %30, RTT 60 ms, 20 sn (çizilen kare / grup kaybı):
 
 6. **Loopback modu.** Eşleş yokken taşıyıcı loopback'e düşer. Datagramlar yine
    fragmentation → FEC → kayıp enjeksiyonu → RS decode yolundan geçer; yalnızca
-   fiziksel ağ yoktur. Tek tarayıcıda gösteri/hata ayıklama için.
+   fiziksel ağ yoktur. Tek tarayıcıda gösteri/hata ayıklama için. Loopback'te
+   yayın sürerken panellerin üstünde **SELF-TEST** uyarı bandı görünür; eşleş
+   bağlandığı anda taşıyıcı gerçek DataChannel'a otomatik geçer ve bant kalkar.
 
 7. **Kare kaynağı.** `MediaStreamTrackProcessor` masaüstü Chrome'da kullanılır;
    Chrome Android ve iOS Safari'de bulunmadığı için `<video>` +

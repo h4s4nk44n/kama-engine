@@ -47,10 +47,25 @@ interface SignalMessage {
   [k: string]: unknown;
 }
 
-const ICE_SERVERS: RTCIceServer[] = [
-  // Ayni LAN'da STUN gereksiz; yine de host adaylari disinda bir sey
-  // gerekirse diye bos birakiliyor. Harici sunucuya bagimlilik yok.
-];
+/**
+ * Ayni LAN'da STUN gereksiz; varsayilan bos liste harici sunucu
+ * bagimliligini sifirda tutar. Ancak mDNS multicast'in filtrelendigi
+ * aglarda (bazi AP izolasyonlari, Windows hotspot) host adaylari
+ * cozulemez ve eslesme hic kurulamaz — o durumda sayfa `?stun=1` ile
+ * acilirsa genel bir STUN sunucusu devreye girer.
+ */
+function iceServers(): RTCIceServer[] {
+  if (new URLSearchParams(location.search).get('stun') === '1') {
+    return [{ urls: 'stun:stun.l.google.com:19302' }];
+  }
+  return [];
+}
+
+/**
+ * 'ready' geldikten sonra medya kanali bu sure icinde acilmazsa
+ * muzakere takilmis sayilir ve odaya yeniden 'join' gonderilir.
+ */
+const PAIR_TIMEOUT_MS = 10_000;
 
 export function signalingUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -66,6 +81,14 @@ export class PeerSession {
   private pendingIce: RTCIceCandidateInit[] = [];
   private remoteDescSet = false;
   private disposed = false;
+  /**
+   * Kontrol kanali acilana kadar bekletilen mesajlar. Tipe gore
+   * "son yazan kazanir": slider suruklemesi kuyrugu sisirmez. Bu kuyruk
+   * olmadan 'codec' duyurusu yarista kaybolur ve paneller kara kalirdi.
+   */
+  private pendingCtrl = new Map<string, string>();
+  /** Eslesme bekcisi — bkz. PAIR_TIMEOUT_MS */
+  private watchdog: number | null = null;
 
   constructor(private readonly ev: PeerEvents) {}
 
@@ -165,15 +188,26 @@ export class PeerSession {
     };
   }
 
-  /** Kontrol kanalindan JSON gonderir (guvenilir, sirali). */
+  /**
+   * Kontrol kanalindan JSON gonderir (guvenilir, sirali). Kanal henuz
+   * acik degilse ama muzakere suruyorsa mesaj kuyruklanir ve kanal
+   * acilinca gonderilir; muzakere yoksa dusurulur.
+   */
   sendControl(msg: unknown): void {
     if (this.controlDc?.readyState === 'open') {
       this.controlDc.send(JSON.stringify(msg));
+      return;
+    }
+    if (this.pc) {
+      const type = (msg as { type?: string }).type ?? '?';
+      this.pendingCtrl.set(type, JSON.stringify(msg));
     }
   }
 
   dispose(): void {
     this.disposed = true;
+    this.clearWatchdog();
+    this.pendingCtrl.clear();
     try {
       this.mediaDc?.close();
       this.controlDc?.close();
@@ -186,6 +220,7 @@ export class PeerSession {
 
   /** Mevcut peer baglantisini tamamen birakir; yeniden eslesmeye hazirlar. */
   private resetPeer(): void {
+    this.clearWatchdog();
     try {
       this.mediaDc?.close();
       this.controlDc?.close();
@@ -198,6 +233,39 @@ export class PeerSession {
     this.pc = null;
     this.pendingIce = [];
     this.remoteDescSet = false;
+    // Kuyruk olu muzakereye aitti; uygulama 'connected' olayinda
+    // ayar + codec duyurusunu zaten yeniden gonderir.
+    this.pendingCtrl.clear();
+  }
+
+  private armWatchdog(): void {
+    this.clearWatchdog();
+    // Jitter: iki taraf ayni anda kurtarmaya kalkip 'ready' firtinasi
+    // yaratmasin diye zaman asimi rastgele 0-2 sn esnetilir.
+    const delay = PAIR_TIMEOUT_MS + Math.random() * 2000;
+    this.watchdog = window.setTimeout(() => this.recoverPairing(), delay);
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdog !== null) {
+      window.clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
+  }
+
+  /**
+   * Eslesme takildi (ICE kurulamadi, sinyal mesaji kayboldu, SCTP
+   * acilmadi...). Odaya yeniden 'join' gonderilir; sunucu join'i
+   * idempotent isledigi icin kimse dusurulmez, yalnizca 'ready' cifti
+   * yeniden dagitilir ve iki taraf temiz sayfadan muzakereye baslar.
+   */
+  private recoverPairing(): void {
+    if (this.disposed) return;
+    if (this.mediaDc?.readyState === 'open') return; // zaten kurtulmus
+    if (this.ws?.readyState !== WebSocket.OPEN) return; // sinyallesme yok
+    this.ev.onState('connecting', 'eslesme takildi — yeniden deneniyor');
+    this.sendSignal({ type: 'join', room: 'kama' });
+    this.armWatchdog();
   }
 
   private sendSignal(msg: SignalMessage): void {
@@ -214,6 +282,7 @@ export class PeerSession {
         this.isInitiator = Boolean(msg.initiator);
         this.ev.onState('connecting', this.isInitiator ? 'teklif hazirlaniyor' : 'teklif bekleniyor');
         this.createPeer();
+        this.armWatchdog();
         if (this.isInitiator) await this.makeOffer();
         break;
       }
@@ -258,6 +327,10 @@ export class PeerSession {
         // geri girmeye CALISMA — yoksa iki sekme birbirini surekli atar.
         this.resetPeer();
         this.ev.onState('closed', 'baska bir cihaz baglandi — bu sekme devre disi');
+        // Sekme tamamen devre disi kalir: disposed bayragi ws 'close'
+        // dinleyicisinin bu durumu ezmesini de engeller.
+        this.disposed = true;
+        this.ws?.close();
         break;
       }
       case 'full': {
@@ -281,7 +354,7 @@ export class PeerSession {
 
   private createPeer(): void {
     if (this.pc) return;
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: iceServers() });
     this.pc = pc;
 
     pc.addEventListener('icecandidate', (e) => {
@@ -289,9 +362,15 @@ export class PeerSession {
     });
 
     pc.addEventListener('connectionstatechange', () => {
+      if (this.pc !== pc) return; // eski muzakereden kalan olay — yok say
       const s = pc.connectionState;
-      if (s === 'failed') this.ev.onState('failed', 'ICE baglantisi kurulamadi');
-      else if (s === 'disconnected') this.ev.onState('connecting', 'baglanti kesildi, toparlaniyor');
+      if (s === 'failed') {
+        this.ev.onState('failed', 'ICE baglantisi kurulamadi');
+        // 10 sn'lik bekciyi bekleme — kesin basarisizlikta hemen kurtar
+        this.recoverPairing();
+      } else if (s === 'disconnected') {
+        this.ev.onState('connecting', 'baglanti kesildi, toparlaniyor');
+      }
     });
 
     if (this.isInitiator) {
@@ -316,17 +395,36 @@ export class PeerSession {
   private attachMedia(dc: RTCDataChannel): void {
     this.mediaDc = dc;
     dc.addEventListener('open', () => {
+      if (this.mediaDc !== dc) return; // olu muzakereden kalan kanal
+      this.clearWatchdog();
       this.ev.onState('connected', 'veri kanali acik');
       this.ev.onTransport(new DataChannelTransport(dc));
     });
     dc.addEventListener('close', () => {
+      // resetPeer ile kapatilan eski kanalin gec 'close' olayi guncel
+      // durumu (or. 'evicted' mesajini) ezmesin.
+      if (this.mediaDc !== dc) return;
       this.ev.onState('closed', 'veri kanali kapandi');
     });
   }
 
   private attachControl(dc: RTCDataChannel): void {
     this.controlDc = dc;
+    const flush = (): void => {
+      for (const s of this.pendingCtrl.values()) {
+        try {
+          dc.send(s);
+        } catch {
+          /* yoksay */
+        }
+      }
+      this.pendingCtrl.clear();
+    };
+    // Yanit veren tarafta kanal 'datachannel' olayiyla zaten ACIK gelebilir
+    if (dc.readyState === 'open') flush();
+    else dc.addEventListener('open', flush);
     dc.addEventListener('message', (e) => {
+      if (this.controlDc !== dc) return; // olu muzakereden kalan kanal
       try {
         this.ev.onControl(JSON.parse(String(e.data)));
       } catch {

@@ -149,24 +149,36 @@ function onSignalingConnection(ws: WebSocket): void {
         room = { peers: new Set() };
         rooms.set(roomName, room);
       }
-      // Oda doluysa KILITLEME — en eski eslesi dusur, yeni gelen girsin.
-      // Unutulmus bir tarayici sekmesi yuzunden gercek cihazin disarida
-      // kalmasi gosteriyi bozuyordu. "Son gelen kazanir" davranisi,
-      // telefonu her acisinda calismasini garanti eder.
-      while (room.peers.size >= 2) {
-        const oldest = room.peers.values().next().value as WebSocket | undefined;
-        if (!oldest) break;
-        room.peers.delete(oldest);
-        console.log(`[oda:${roomName}] oda doluydu, en eski esles dusuruldu`);
-        try {
-          oldest.send(JSON.stringify({ type: 'evicted' }));
-        } catch {
-          /* zaten kapali */
+      // Zaten uyeyse yeniden 'join' idempotenttir: kimseyi dusurme,
+      // yalnizca 'ready' ciftini yeniden dagit. Istemci tarafindaki
+      // eslesme bekcisi (watchdog) takilan muzakereyi boyle kurtarir.
+      if (!room.peers.has(ws)) {
+        // Oda doluysa KILITLEME — en eski eslesi dusur, yeni gelen girsin.
+        // Unutulmus bir tarayici sekmesi yuzunden gercek cihazin disarida
+        // kalmasi gosteriyi bozuyordu. "Son gelen kazanir" davranisi,
+        // telefonu her acisinda calismasini garanti eder.
+        while (room.peers.size >= 2) {
+          const oldest = room.peers.values().next().value as WebSocket | undefined;
+          if (!oldest) break;
+          room.peers.delete(oldest);
+          console.log(`[oda:${roomName}] oda doluydu, en eski esles dusuruldu`);
+          try {
+            oldest.send(JSON.stringify({ type: 'evicted' }));
+          } catch {
+            /* zaten kapali */
+          }
+          // Soketi kapat: acik kalirsa gec offer/answer/ice mesajlari
+          // canli ciftin muzakeresini zehirleyebilir.
+          try {
+            oldest.close();
+          } catch {
+            /* zaten kapali */
+          }
         }
-      }
 
-      room.peers.add(ws);
-      console.log(`[oda:${roomName}] esles katildi (${room.peers.size}/2)`);
+        room.peers.add(ws);
+        console.log(`[oda:${roomName}] esles katildi (${room.peers.size}/2)`);
+      }
 
       if (room.peers.size === 2) {
         // Ikinci gelen initiator olur; ilk gelen teklifi bekler.
@@ -181,6 +193,8 @@ function onSignalingConnection(ws: WebSocket): void {
     if (!roomName) return;
     const room = rooms.get(roomName);
     if (!room) return;
+    // Atilmis/eski bir soketin gec sinyalleri canli cifte iletilmez
+    if (!room.peers.has(ws)) return;
     for (const peer of room.peers) {
       if (peer !== ws && peer.readyState === peer.OPEN) peer.send(raw.toString());
     }
@@ -190,7 +204,10 @@ function onSignalingConnection(ws: WebSocket): void {
     if (!roomName) return;
     const room = rooms.get(roomName);
     if (!room) return;
-    room.peers.delete(ws);
+    // Odada degilse (evict edilmisti) sessizce cik — yoksa zombi
+    // sekmenin kapanisi canli cifte 'peer-left' yayinlar ve calisan
+    // baglantiyi oldururdu.
+    if (!room.peers.delete(ws)) return;
     console.log(`[oda:${roomName}] esles ayrildi (${room.peers.size}/2)`);
     for (const peer of room.peers) {
       if (peer.readyState === peer.OPEN) peer.send(JSON.stringify({ type: 'peer-left' }));
