@@ -144,6 +144,17 @@ export class MediaSender {
     return { ...this.config };
   }
 
+  /**
+   * Bir sonraki karenin keyframe olmasini zorlar.
+   *
+   * ARQ tarafindaki alici referans zincirini kaybettiginde (grup dustu,
+   * FEC+ARQ da yetmedi) kontrol kanalindan keyframe ister; 2 saniyelik
+   * periyodik keyframe'i beklemek yerine akis ~1 RTT'de toparlanir.
+   */
+  forceKeyframe(): void {
+    this.lastKeyframeMs = Number.NEGATIVE_INFINITY;
+  }
+
   /** Bitrate calisirken degistirilebilir - encoder yeniden yapilandirilir. */
   setBitrate(bps: number): void {
     const clamped = Math.max(150_000, Math.min(3_000_000, Math.round(bps)));

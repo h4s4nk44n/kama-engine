@@ -37,6 +37,16 @@ export interface GroupParams {
   kTarget: number;
   /** koruma orani r (0.2..1.2) */
   ratio: number;
+  /**
+   * UEP: keyframe iceren gruplarin koruma orani. Verilmezse ratio kullanilir.
+   *
+   * Keyframe referans zincirinin tasiyicisidir — kaybi tek kareyi degil,
+   * sonraki keyframe'e kadar TUM akisi goturur. Ayrica keyframe grubu erken
+   * kapanir (asagida), yani K'si kucuktur ve kucuk K, RS kurtarmasini
+   * istatistiksel olarak zayiflatir. Iki sebep de ayni yonu gosterir:
+   * keyframe grubu delta gruplardan KALIN korunmalidir.
+   */
+  keyframeRatio?: number;
   /** grup penceresi, ms */
   windowMs: number;
   /** false ise parity uretilmez (M=0) */
@@ -55,6 +65,8 @@ export interface GroupStats {
   symbolSize: number;
   sourceBytes: number;
   parityBytes: number;
+  /** grupta en az bir keyframe PU'su var mi (UEP orani bununla secildi) */
+  hasKeyframe: boolean;
   /** grubu kapatan sebep — hata ayiklama/metrik icin */
   reason: 'full' | 'keyframe' | 'window' | 'flush';
   /**
@@ -89,6 +101,8 @@ export class GroupBuilder {
   /** Gruba giren semboller, KENDI dogal boylarinda (16'ya yuvarlanmis). */
   private pending: Uint8Array[] = [];
   private maxRawLen = 0;
+  /** Acik grupta keyframe PU'su var mi — kapanista UEP oranini secer. */
+  private pendingHasKeyframe = false;
   private groupId = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly onSource: GroupBuilderOptions['onSource'];
@@ -113,7 +127,18 @@ export class GroupBuilder {
     const p = this.params;
     p.kTarget = Math.max(1, Math.min(80, Math.round(p.kTarget)));
     p.ratio = Math.max(0, Math.min(1.2, p.ratio));
+    if (p.keyframeRatio !== undefined) {
+      p.keyframeRatio = Math.max(0, Math.min(1.2, p.keyframeRatio));
+    }
     p.windowMs = Math.max(20, Math.min(2000, p.windowMs));
+  }
+
+  /** Acik grubun etkin koruma orani: keyframe grubuna UEP orani uygulanir. */
+  private effectiveRatio(): number {
+    if (this.pendingHasKeyframe && this.params.keyframeRatio !== undefined) {
+      return this.params.keyframeRatio;
+    }
+    return this.params.ratio;
   }
 
   /**
@@ -130,6 +155,7 @@ export class GroupBuilder {
     const symbol = buildPU(pu, ownSize);
     this.pending.push(symbol);
     if (raw > this.maxRawLen) this.maxRawLen = raw;
+    if (pu.keyframe) this.pendingHasKeyframe = true;
 
     // K ve M henuz kesin degil (grup kapanmadi) — tahmin tasinir.
     // Parity datagramlari gercek degerleri getirir ve alicida otoritedir.
@@ -167,6 +193,7 @@ export class GroupBuilder {
     this.disarmTimer();
     this.pending = [];
     this.maxRawLen = 0;
+    this.pendingHasKeyframe = false;
   }
 
   private armTimer(): void {
@@ -187,7 +214,7 @@ export class GroupBuilder {
   /** Source basliginda tasinacak M tahmini. */
   private predictedM(): number {
     if (!this.params.fecEnabled) return 0;
-    return Math.min(MAX_M, Math.max(1, Math.ceil(this.params.kTarget * this.params.ratio)));
+    return Math.min(MAX_M, Math.max(1, Math.ceil(this.params.kTarget * this.effectiveRatio())));
   }
 
   private close(reason: GroupStats['reason']): void {
@@ -197,6 +224,9 @@ export class GroupBuilder {
     this.pending = [];
     const maxRaw = this.maxRawLen;
     this.maxRawLen = 0;
+    const hasKeyframe = this.pendingHasKeyframe;
+    const ratio = this.effectiveRatio();
+    this.pendingHasKeyframe = false;
     if (natural.length === 0) return;
 
     const K = natural.length;
@@ -218,8 +248,9 @@ export class GroupBuilder {
     }
 
     // M = max(1, ceil(K * r)), ust sinir MAX_M. FEC kapaliysa M=0.
+    // r, UEP ile secilir: keyframe grubu keyframeRatio, digerleri ratio.
     const M = this.params.fecEnabled
-      ? Math.min(MAX_M, Math.max(1, Math.ceil(K * this.params.ratio)))
+      ? Math.min(MAX_M, Math.max(1, Math.ceil(K * ratio)))
       : 0;
 
     const parity = M > 0 ? getCodec().encode(source, M) : [];
@@ -253,6 +284,7 @@ export class GroupBuilder {
       symbolSize,
       sourceBytes: K * symbolSize,
       parityBytes: M * symbolSize,
+      hasKeyframe,
       reason,
       symbols,
     });

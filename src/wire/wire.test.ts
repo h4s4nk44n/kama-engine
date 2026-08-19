@@ -403,6 +403,69 @@ test('groupBuilder: keyframe chunk tamamlaninca grup aninda kapaniyor', () => {
   h.builder.dispose();
 });
 
+test('UEP: keyframe grubu keyframeRatio, delta grubu ratio ile korunuyor', () => {
+  const rnd = mulberry32(107);
+  const h = makeBuilder({ kTarget: 8, ratio: 0.25, keyframeRatio: 1.0, fecEnabled: true, windowMs: 5000 });
+
+  // Delta grubu: 8 PU, keyframe yok -> M = ceil(8 * 0.25)
+  for (const pu of makePUs(8, rnd)) h.builder.push(pu);
+  // Keyframe grubu: 4. PU keyframe chunk kuyrugu -> erken kapanir, K=4
+  for (const pu of makePUs(4, rnd, 3)) h.builder.push(pu);
+
+  const delta = h.groupStats[0];
+  assert.equal(delta.hasKeyframe, false);
+  assert.equal(delta.M, Math.ceil(8 * 0.25), 'delta grubu taban orani kullanir');
+
+  const key = h.groupStats[1];
+  assert.equal(key.hasKeyframe, true);
+  assert.equal(key.reason, 'keyframe');
+  assert.equal(key.K, 4);
+  assert.equal(key.M, Math.ceil(4 * 1.0), 'keyframe grubu UEP oranini kullanir');
+  h.builder.dispose();
+});
+
+test('UEP: keyframeRatio verilmezse keyframe grubu da taban orani kullanir', () => {
+  const rnd = mulberry32(108);
+  const h = makeBuilder({ kTarget: 8, ratio: 0.5, fecEnabled: true, windowMs: 5000 });
+  for (const pu of makePUs(4, rnd, 3)) h.builder.push(pu);
+  assert.equal(h.groupStats[0].hasKeyframe, true);
+  assert.equal(h.groupStats[0].M, Math.ceil(4 * 0.5), 'geriye uyum: UEP istege bagli');
+  h.builder.dispose();
+});
+
+test('UEP: teslim edilen keyframe PU\'su OpenGroupView.hasKeyframe isaretliyor', () => {
+  const rnd = mulberry32(109);
+  const all: EmittedDatagram[] = [];
+  const builder = groupedBuilder({
+    params: { kTarget: 8, ratio: 0.5, windowMs: 5000, fecEnabled: true },
+    onGroup: (a) => all.push(...a),
+  });
+  for (const pu of makePUs(4, rnd, 3)) builder.push(pu);
+
+  const asm = new GroupAssembler({ useFec: true, onPU: () => {} });
+  // Grubu ACIK birakacak kadar az paket ver; biri keyframe PU'su (indeks 3)
+  asm.push(all[0].datagram, 0);
+  asm.push(all[3].datagram, 0);
+
+  const views = asm.openGroups();
+  assert.equal(views.length, 1);
+  assert.equal(views[0].hasKeyframe, true, 'keyframe PU teslim edildi -> bayrak');
+
+  // Keyframe tasimayan grup bayraklamaz
+  const all2: EmittedDatagram[] = [];
+  const builder2 = groupedBuilder({
+    params: { kTarget: 8, ratio: 0.5, windowMs: 5000, fecEnabled: true },
+    onGroup: (a) => all2.push(...a),
+  });
+  for (const pu of makePUs(4, rnd)) builder2.push(pu);
+  builder2.flush();
+  const asm2 = new GroupAssembler({ useFec: true, onPU: () => {} });
+  asm2.push(all2[0].datagram, 0);
+  assert.equal(asm2.openGroups()[0].hasKeyframe, false);
+  builder.dispose();
+  builder2.dispose();
+});
+
 test('groupBuilder: FEC kapaliyken parity uretilmiyor (M=0)', () => {
   const rnd = mulberry32(103);
   const h = makeBuilder({ kTarget: 6, ratio: 0.8, fecEnabled: false, windowMs: 5000 });

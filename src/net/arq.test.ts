@@ -37,6 +37,7 @@ function group(over: Partial<OpenGroupView> = {}): OpenGroupView {
     have: [],
     needed: 16,
     firstSeenMs: 0,
+    hasKeyframe: false,
     ...over,
   };
 }
@@ -219,6 +220,31 @@ test('NACK: parity de istenebilir (MDS — hangisi gelirse gelsin)', () => {
   c2.tick(NACK_SETTLE_MS + 1, [group({ K: 4, M: 13, have: [0, 1, 2], needed: 1, groupId: 9 })]);
   const n2 = decodeNack(s2[0])!;
   assert.deepEqual(n2.indices, [3]);
+});
+
+test('UEP: keyframe iceren grup NACK sirasinda one aliniyor', () => {
+  const { c, sent } = makeController(60);
+  // Keyframe grubu daha GENC olsa da once o istenmeli
+  c.tick(NACK_SETTLE_MS + 10, [
+    group({ groupId: 7, have: [], needed: 16, firstSeenMs: 0 }),
+    group({ groupId: 8, have: [], needed: 16, firstSeenMs: 5, hasKeyframe: true }),
+  ]);
+
+  assert.equal(sent.length, 2, 'iki grup da NACK almali');
+  assert.equal(decodeNack(sent[0])!.groupId, 8, 'keyframe grubu once');
+  assert.equal(decodeNack(sent[1])!.groupId, 7);
+});
+
+test('UEP: keyframe yoksa en eski grup (deadline\'i en yakin) once', () => {
+  const { c, sent } = makeController(60);
+  c.tick(NACK_SETTLE_MS + 10, [
+    group({ groupId: 3, have: [], needed: 16, firstSeenMs: 8 }),
+    group({ groupId: 2, have: [], needed: 16, firstSeenMs: 0 }),
+  ]);
+
+  assert.equal(sent.length, 2);
+  assert.equal(decodeNack(sent[0])!.groupId, 2, 'en eski grup once');
+  assert.equal(decodeNack(sent[1])!.groupId, 3);
 });
 
 test('NACK: settle suresinden once uretilmiyor', () => {

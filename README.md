@@ -281,6 +281,45 @@ kalıyor, sonsuza kadar büyümüyor.
 
 ---
 
+## Adaptif koruma (UEP) — ARQ varken FEC neden inceltiliyor
+
+Saf FEC'in maliyeti sabittir: koruma oranı `r`, kayıp olsun olmasın her grupta
+ödenir. ARQ'nun maliyeti ise yalnız **gerçekleşen** kayıp kadardır — ama
+deadline'a bağlıdır ve RTT büyüyünce kendini kapatır. İkisinin doğru bileşimi
+ikisinin de tek başına yapamadığını yapar:
+
+- **FEC ortalamayı karşılar.** Grup içi kayıp payı `M/(K+M) ≥ p` olsun diye
+  delta gruplara `r_delta = p/(1−p) · 1.15` yeter (%15 pay Gilbert kümelenmesi
+  için). Kullanıcının slider'daki `r`'si **tavandır**, sabit maliyet değil.
+- **ARQ kuyruğu karşılar.** K'yı kıl payı kaçıran gruplar (varyans, patlamalar)
+  NACK/retransmit ile onarılır. `max_retries` 1'e düşünce `r_delta` tavana
+  doğru yarı yolda durur; 0 olunca (ARQ kapalı) tavan aynen kullanılır —
+  sistem **saf FEC'e yumuşakça döner**, çökme modu yoktur.
+- **Keyframe grupları her zaman kalın korunur:** `r_key = min(1.2, 1.5r)`.
+  Keyframe referans zincirinin taşıyıcısıdır (kaybı tek kareyi değil, sonraki
+  keyframe'e kadar tüm akışı götürür) ve erken kapanan keyframe grubunun
+  K'sı küçüktür — küçük K, RS kurtarmasını istatistiksel olarak zayıflatır.
+  Bu koruma RTT'den bağımsızdır: ARQ'nun kendini kapattığı yerde de durur.
+
+Varsayılanlarla (kayıp %30, r=0.8, K=16, düşük RTT): delta M 13 → 8'e iner,
+tel overhead'i ~%45'ten ~%33'e düşer; FEC paneli kuyruğu karşılayamayıp
+bozulurken FEC+ARQ paneli aynı (daha düşük) overhead'de temiz kalır.
+Kayıp %10'da fark daha da açılır (delta M=3, overhead ~%16).
+
+Tamamlayıcı iki mekanizma:
+
+1. **NACK'te UEP önceliği:** keyframe içeren gruplar önce, sonra deadline'ı
+   en yakın (en eski) grup. `NACK_MAX_INDICES` ve RTX bütçesi sınırlı
+   kaynaktır; önce en değerli veriye harcanır.
+2. **Keyframe isteği:** ARQ panelinin alıcısı referans zincirini kaybederse
+   (FEC + ARQ da yetmedi) güvenilir kontrol kanalından göndericiye
+   `keyframe-request` gider; 2 saniyelik periyodik keyframe'i beklemek yerine
+   akış ~1 RTT'de toparlanır. En az 400 ms arayla istenir. Zorlanan keyframe
+   tek tel akışına girer, üç panel de alır — panel 3'e özel akış avantajı
+   doğmaz, karşılaştırma dürüst kalır.
+
+---
+
 ## Ölçülen davranış
 
 Test deseni kaynağı, VP8, 640×360 @ 20 fps, `K_target = 16`, loopback ve gerçek

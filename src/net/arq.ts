@@ -323,7 +323,19 @@ export class NackController {
     const minInterval = this.minResendIntervalMs();
     const alive = new Set<number>();
 
-    for (const g of openGroups) {
+    /**
+     * UEP onceligi: keyframe iceren gruplar ONCE, sonra en eski grup
+     * (deadline'ina en az sure kalan). NACK_MAX_INDICES ve RTX butcesi
+     * sinirli kaynaklardir; keyframe grubu referans zincirini tasidigi
+     * icin kaybi tek grubu degil, sonraki keyframe'e kadar tum akisi
+     * goturur — onarim sirasinda one gecmelidir.
+     */
+    const ordered = [...openGroups].sort((a, b) => {
+      if (a.hasKeyframe !== b.hasKeyframe) return a.hasKeyframe ? -1 : 1;
+      return a.firstSeenMs - b.firstSeenMs;
+    });
+
+    for (const g of ordered) {
       alive.add(g.groupId);
       if (g.needed <= 0) continue;
 
