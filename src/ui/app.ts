@@ -23,6 +23,20 @@
  * fiziksel paketleri kaybeder. Yalnizca retransmit paketleri panel 3'e
  * ozeldir ve AYRI bir ordinal uzayi kullanir — boylece ARQ etkinken bile
  * ana desen kaymaz.
+ *
+ * ADAPTIF KORUMA (UEP):
+ * Kullanicinin r'si koruma TAVANIDIR, sabit maliyet degil. ARQ fizibil
+ * oldugu surece delta gruplarin FEC'i inceltilir: parite ORTALAMA kaybi
+ * karsilayacak kadar tutulur, kuyruk (patlamalar, sans) NACK/retransmit'e
+ * birakilir — retransmit maliyeti yalniz gercek kayip kadardir. Keyframe
+ * gruplari her zaman kalin korunur (r_key = 1.5r, tavan 1.2): referans
+ * zincirinin tasiyicisidirlar ve korumalari RTT'den bagimsiz olmalidir.
+ * RTT buyuyup ARQ kendini kapatinca delta orani tavana geri doner —
+ * sistem saf FEC'e yumusakca duser.
+ *
+ * Incelen FEC'i UC PANEL DE alir; tek tel akisi bozulmaz. Fark tam da
+ * gosterilmek istenen sey olur: ayni (dusuk) overhead'de FEC paneli
+ * kuyrugu karsilayamaz, FEC+ARQ paneli karsilar.
  */
 
 import { GroupBuilder } from '../wire/groupBuilder.ts';
@@ -62,6 +76,12 @@ const PING_INTERVAL_MS = 1000;
 const TICK_MS = 30;
 /** Metrik DOM guncelleme araligi (tik katı). */
 const UI_EVERY = 4;
+/**
+ * Iki keyframe istegi arasindaki en az sure. Istenen keyframe'in gelmesi
+ * ~RTT/2 + encode surer; daha sik istemek encoder'i keyframe seline bogar
+ * (keyframe delta'nin ~5-10 kati buyuklugundedir).
+ */
+const KEYFRAME_REQ_MIN_MS = 400;
 
 interface Panel {
   id: 'plain' | 'fec' | 'arq';
@@ -109,6 +129,10 @@ export class App {
   });
   /** Toplam giden bayt (RTX butcesi paydasi) */
   private txBytes = 0;
+  /** Son keyframe istegi zamani — istek seli olmasin */
+  private lastKfRequestMs = 0;
+  /** Gonderilen keyframe istegi sayisi (hata ayiklama) */
+  private kfRequested = 0;
   /** Son grup kayiplari — hata ayiklama */
   private lossLog: Array<{ panel: string; groupId: number; missing: number; K: number }> = [];
   /** Kablodaki gercek tasima (tarayici istatistiklerinden okunur) */
@@ -297,7 +321,7 @@ export class App {
 
     this.lossMain.setLoss(this.settings.lossPct / 100, this.settings.model);
     this.lossRtx.setLoss(this.settings.lossPct / 100, this.settings.model);
-    this.builder?.setParams({ kTarget: this.settings.kTarget, ratio: this.settings.ratio });
+    this.applyProtection();
     this.sender?.setBitrate(this.settings.bitrateKbps * 1000);
 
     this.outputs.loss.textContent = `${this.settings.lossPct} %`;
@@ -305,7 +329,6 @@ export class App {
     this.outputs.bitrate.textContent = `${this.settings.bitrateKbps} kbps`;
     this.outputs.ratio.textContent = this.settings.ratio.toFixed(2);
     this.outputs.kTarget.textContent = String(this.settings.kTarget);
-    this.outputs.m.textContent = `M = ${this.currentM()}  ·  ${this.settings.kTarget}+${this.currentM()} paket/grup`;
 
     this.sliders.loss.value = String(this.settings.lossPct);
     this.sliders.rtt.value = String(this.settings.rttMs);
@@ -318,8 +341,50 @@ export class App {
     if (propagate) this.peer?.sendControl({ type: 'settings', settings: this.settings });
   }
 
-  private currentM(): number {
-    return Math.min(32, Math.max(1, Math.ceil(this.settings.kTarget * this.settings.ratio)));
+  /**
+   * UEP + adaptif koruma oranlari.
+   *
+   * r_key: keyframe gruplari HER ZAMAN kalin (1.5r, tavan 1.2) — koruma
+   * RTT'den bagimsiz olmali, ARQ'nun kendini kapattigi yerde de durmali.
+   *
+   * r_delta: ARQ fizibilse parite ORTALAMA kaybi karsilayacak kadar tutulur.
+   * Grup icindeki kayip payi M/(K+M) >= p olsun istersek M/K >= p/(1-p)
+   * gerekir; ustune %15 pay Gilbert kumelenmesi icindir. Kuyruk (varyans)
+   * ARQ'ya kalir — maliyeti sabit parite gibi surekli degil, yalniz gercek
+   * kayip kadardir. Tek NACK turu kalmissa tavana dogru yari yolda durulur;
+   * ARQ kapaliysa (maxRetries=0) tavan aynen kullanilir: saf FEC'e donus.
+   */
+  private protectionRatios(): { delta: number; key: number } {
+    const base = this.settings.ratio;
+    const key = Math.min(1.2, Math.max(base, base * 1.5));
+    const retries = this.nack.currentMaxRetries();
+    if (retries <= 0) return { delta: base, key };
+
+    const p = Math.min(0.9, this.settings.lossPct / 100);
+    const mean = (p / (1 - p)) * 1.15;
+    const thin = Math.max(1 / this.settings.kTarget, mean);
+    const delta = retries >= 2 ? thin : (thin + base) / 2;
+    return { delta: Math.min(base, delta), key };
+  }
+
+  /** Adaptif oranlari builder'a ve gostergelere uygular. */
+  private applyProtection(): void {
+    const pr = this.protectionRatios();
+    this.builder?.setParams({
+      kTarget: this.settings.kTarget,
+      ratio: pr.delta,
+      keyframeRatio: pr.key,
+    });
+    const mDelta = this.mFor(pr.delta);
+    const mKey = this.mFor(pr.key);
+    const thinned = pr.delta < this.settings.ratio - 1e-9;
+    this.outputs.m.textContent =
+      `M = ${mDelta} delta / ${mKey} key  ·  ${this.settings.kTarget}+${mDelta} paket/grup` +
+      (thinned ? '  ·  adaptif: ARQ acik, FEC inceltildi' : '');
+  }
+
+  private mFor(ratio: number): number {
+    return Math.min(32, Math.max(1, Math.ceil(this.settings.kTarget * ratio)));
   }
 
   /** Fizibilite hesabinda kullanilan toplam tur suresi. */
@@ -331,9 +396,10 @@ export class App {
     const fec = this.panel('fec').assembler.stats;
     const total = fec.sourceBytes + fec.parityBytes;
     const overhead = total > 0 ? (fec.parityBytes / total) * 100 : 0;
+    const pr = this.protectionRatios();
     this.el.statusLine.innerHTML =
       `kayıp <b>%${this.settings.lossPct}</b> · RTT <b>${this.settings.rttMs} ms</b>` +
-      ` · K=<b>${this.settings.kTarget}</b> · M=<b>${this.currentM()}</b>` +
+      ` · K=<b>${this.settings.kTarget}</b> · M=<b>${this.mFor(pr.delta)}/${this.mFor(pr.key)}</b> (delta/key)` +
       ` · overhead <b>%${overhead.toFixed(1)}</b>` +
       ` · fec: <b>${codecName()}</b> · ${platformLine()}`;
   }
@@ -348,6 +414,10 @@ export class App {
         const m = msg as { type?: string; settings?: Settings; codec?: string; description?: string };
         if (m.type === 'settings' && m.settings) {
           this.applySettings(m.settings, false);
+        } else if (m.type === 'keyframe-request') {
+          // Karsi tarafin ARQ alicisi referans zincirini kaybetti —
+          // periyodik keyframe'i beklemek yerine hemen bir tane uret.
+          this.sender?.forceKeyframe();
         } else if (m.type === 'codec' && m.codec) {
           this.remoteDecoderConfig = {
             codec: m.codec,
@@ -585,10 +655,13 @@ export class App {
         this.el.linkInfo.textContent = 'loopback (eşleş yok) · tam boru hattı çalışıyor';
       }
 
+      const pr = this.protectionRatios();
       this.builder = new GroupBuilder({
         params: {
           kTarget: this.settings.kTarget,
-          ratio: this.settings.ratio,
+          // UEP: delta gruplara adaptif (incelmis) oran, keyframe'e kalin
+          ratio: pr.delta,
+          keyframeRatio: pr.key,
           windowMs: 200,
           // Parity HER ZAMAN uretilir: panel 2 ve 3 kullanir, panel 1 yok sayar.
           fecEnabled: true,
@@ -673,6 +746,8 @@ export class App {
     this.nack.reset();
     this.rtxBudget.reset();
     this.txBytes = 0;
+    this.lastKfRequestMs = 0;
+    this.kfRequested = 0;
     this.el.startBtn.disabled = false;
     this.el.stopBtn.disabled = true;
     this.updateLoopbackBanner();
@@ -725,6 +800,29 @@ export class App {
     this.symbolCache.prune(now);
     // Alici tarafi: yalniz ARQ paneli NACK uretir
     this.nack.tick(now, this.panel('arq').assembler.openGroups());
+    this.maybeRequestKeyframe(now);
+  }
+
+  /**
+   * ARQ panelinin alicisi referans zincirini kaybettiyse (FEC + ARQ da
+   * yetmedi) gondericiden keyframe iste — 2 saniyelik periyodik keyframe'i
+   * beklemek yerine akis ~1 RTT'de toparlanir.
+   *
+   * Zorlanan keyframe TEK tel akisina girer, uc panel de alir: panel 3'e
+   * ozel bir akis avantaji dogmaz (aksine hizli yeniden senkron rakip
+   * panellere de yarar), karsilastirma durust kalir.
+   */
+  private maybeRequestKeyframe(now: number): void {
+    if (!this.running) return;
+    if (!this.panel('arq').receiver.stats.waitingForKey) return;
+    if (now - this.lastKfRequestMs < KEYFRAME_REQ_MIN_MS) return;
+    this.lastKfRequestMs = now;
+    this.kfRequested++;
+    if (this.transport instanceof LoopbackTransport) {
+      this.sender?.forceKeyframe();
+    } else {
+      this.peer?.sendControl({ type: 'keyframe-request' });
+    }
   }
 
   /** ARQ paneli icin ek sayaclar. */
@@ -751,6 +849,9 @@ export class App {
     this.el.infeasible.textContent = String(a.nackInfeasible);
     // max_retries 0 -> ARQ kapandi, kirmizi
     this.el.maxRetries.parentElement?.classList.toggle('dead', a.maxRetries === 0);
+    // Olculen RTT degistikce fizibilite, onunla birlikte adaptif koruma
+    // orani da degisir — slider beklemeden burada yeniden uygulanir.
+    this.applyProtection();
     this.updateStatusLine();
   }
 
@@ -838,6 +939,12 @@ export class App {
         raw: { ...this.nack.stats },
         cache: { ...this.symbolCache.stats },
         txBytes: this.txBytes,
+        kfRequested: this.kfRequested,
+      },
+      protection: {
+        base: this.settings.ratio,
+        ...this.protectionRatios(),
+        builderParams: this.builder?.getParams() ?? null,
       },
       lossLog: this.lossLog.slice(),
       panels: panelDump,

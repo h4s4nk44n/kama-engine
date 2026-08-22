@@ -84,6 +84,11 @@ interface OpenGroup {
   /** ARQ ile gelen sembol sayisi — grubu ARQ mi kurtardi, onu anlamak icin */
   retransmitted: number;
   /**
+   * Teslim edilen source PU'lardan birinde keyframe bayragi gorulduyse true.
+   * NACK onceligi bununla verilir: keyframe grubu referans zincirini tasir.
+   */
+  hasKeyframe: boolean;
+  /**
    * Ustteki katmana ILETILMIS source blok indeksleri.
    * Source semboller geldigi anda iletilir; grup kapandiginda yalnizca
    * henuz iletilmemis olanlar (kurtarilanlar) gonderilir. Ayni PU iki kez
@@ -102,6 +107,8 @@ export interface OpenGroupView {
   /** kac sembol daha gerekiyor */
   needed: number;
   firstSeenMs: number;
+  /** grup keyframe tasiyor mu (yalniz teslim edilen PU'lardan bilinir) */
+  hasKeyframe: boolean;
 }
 
 export class GroupAssembler {
@@ -211,6 +218,7 @@ export class GroupAssembler {
         firstSeenMs: nowMs,
         settled: false,
         retransmitted: 0,
+        hasKeyframe: false,
         delivered: new Set(),
         authoritative: false,
         accounted: false,
@@ -255,7 +263,8 @@ export class GroupAssembler {
            * bekletmek icin degil.
            */
           g.delivered.add(bi);
-          this.emitSymbol(copy);
+          const pu = this.emitSymbol(copy);
+          if (pu?.keyframe) g.hasKeyframe = true;
         }
       }
     }
@@ -349,6 +358,7 @@ export class GroupAssembler {
         have: [...g.symbols.keys()],
         needed: Math.max(0, g.K - g.symbols.size),
         firstSeenMs: g.firstSeenMs,
+        hasKeyframe: g.hasKeyframe,
       });
     }
     return out;
@@ -483,13 +493,15 @@ export class GroupAssembler {
     }
   }
 
-  private emitSymbol(symbol: Uint8Array): void {
+  /** Teslim edilen PU'yu dondurur — cagiran keyframe bayragina bakabilsin. */
+  private emitSymbol(symbol: Uint8Array): ProtectedUnit | null {
     const pu = parsePU(symbol);
     if (!pu) {
       this.stats.crcFailures++;
-      return;
+      return null;
     }
     this.stats.pusDelivered++;
     this.onPU(pu);
+    return pu;
   }
 }
